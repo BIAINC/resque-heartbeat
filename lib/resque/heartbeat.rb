@@ -1,21 +1,20 @@
 require 'resque'
 
 module Resque
-  def self.prune_dead_workers
-    begin
-      Worker.all.each { |worker| worker.prune_if_dead }
-    rescue Exception => e
-      p e
-    end
-  end
-
   class Worker
     def startup_with_heartbeat
       startup_without_heartbeat
       heart.run
     end
-    alias startup_without_heartbeat startup
-    alias startup startup_with_heartbeat
+    alias_method(:startup_without_heartbeat, :startup)
+    alias_method(:startup, :startup_with_heartbeat)
+
+    def unregister_worker_with_heartbeat
+      heart.stop
+      unregister_worker_without_heartbeat
+    end
+    alias_method(:unregister_worker_without_heartbeat, :unregister_worker)
+    alias_method(:unregister_worker, :unregister_worker_with_heartbeat)
 
     def heart
       @heart ||= Heart.new(self)
@@ -33,30 +32,32 @@ module Resque
       end
 
       def run
-        Thread.new { loop { sleep(2) && beat! } }
+        @thrd ||= Thread.new { loop { sleep(2) && beat! } }
+      end
+
+      def stop
+        Thread.kill(@thrd)
+        puts @thrd
+        Resque.redis.del key
+      rescue
+        nil
       end
 
       def redis
         Resque.redis
-        # @redis && connected? ? @redis : @redis = connect
       end
 
-      # def connect
-      #   # apparently the Redis connection is not thread-safe, so we connect another instance
-      #   # see https://github.com/ezmobius/redis-rb/issues#issue/75
-      #   url   = Resque.redis.instance_variable_get(:@redis).client.location
-      #   redis = Redis.connect(:url => "redis://#{url}")
-      #   redis.client.connect
-      #   Redis::Namespace.new(:resque, :redis => redis)
-      # end
+      def Heart.heartbeat_key(worker_name)
+        "worker:#{worker_name}:heartbeat"
+      end
 
-      # def connected?
-      #   @redis.client.connected?
-      # end
+      def key
+        Heart.heartbeat_key worker
+      end
 
       def beat!
         redis.sadd(:workers, worker)
-        redis.set("worker:#{worker}:heartbeat", Time.now.to_s)
+        redis.set(key, Time.now.to_s)
       rescue Exception => e
         p e
       end
@@ -66,8 +67,23 @@ module Resque
       end
 
       def last_beat
-        Resque.redis.get("worker:#{worker}:heartbeat") || worker.started
+        Resque.redis.get(key) || worker.started
       end
     end
   end
+  #
+  # NOTE: this assumes all of your workers are putting out heartbeats
+  def self.prune_dead_workers
+    begin
+      beats = Resque.redis.keys(Worker::Heart.heartbeat_key('*'))
+      Worker.all.each do |worker|
+        worker.prune_if_dead
+        beats.delete worker.heart.key
+      end
+      beats.each { |key| Resque.redis.del key }
+    rescue Exception => e
+      p e
+    end
+  end
+
 end
