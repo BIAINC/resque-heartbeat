@@ -21,7 +21,10 @@ module Resque
     end
 
     def prune_if_dead
-      unregister_worker if heart.last_beat_before?(5)
+      return nil unless heart.last_beat_before?(5)
+
+      Resque.logger.info "Pruning worker '#{hostname}' from resque. Last heartbeat was at #{heart.last_beat}"
+      unregister_worker
     end
 
     class Heart
@@ -32,7 +35,15 @@ module Resque
       end
 
       def run
-        @thrd ||= Thread.new { loop { sleep(2) && beat! } }
+        @thrd ||= Thread.new do
+          loop do
+            begin
+              sleep(2) && beat!
+            rescue Exception => e
+              Resque.logger.error "Error while doing heartbeat: #{e} : #{e.backtrace}"
+            end
+          end
+        end
       end
 
       def stop
@@ -59,7 +70,7 @@ module Resque
         redis.sadd(:workers, worker)
         redis.set(key, Time.now.to_s)
       rescue Exception => e
-        p e
+        Resque.logger.fatal "Unable to set the heartbeat for worker '#{hostname}': #{e} : #{e.backtrace}"
       end
 
       def last_beat_before?(seconds)
@@ -71,16 +82,23 @@ module Resque
       end
     end
   end
-  #
+
   # NOTE: this assumes all of your workers are putting out heartbeats
   def self.prune_dead_workers
     begin
       beats = Resque.redis.keys(Worker::Heart.heartbeat_key('*'))
       Worker.all.each do |worker|
         worker.prune_if_dead
+
+        # remove the worker from consideration
         beats.delete worker.heart.key
       end
-      beats.each { |key| Resque.redis.del key }
+
+      # remove `
+      beats.each do |key|
+        Resque.logger.info "Removing #{key} from heartbeats because the worker isn't talking to Resque."
+        Resque.redis.del key
+      end
     rescue Exception => e
       p e
     end
