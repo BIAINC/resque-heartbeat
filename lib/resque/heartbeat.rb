@@ -2,28 +2,36 @@ require 'resque'
 
 module Resque
   class Worker
+    alias_method(:startup_without_heartbeat, :startup)
     def startup_with_heartbeat
       startup_without_heartbeat
       heart.run
     end
-    alias_method(:startup_without_heartbeat, :startup)
     alias_method(:startup, :startup_with_heartbeat)
 
+    alias_method(:unregister_worker_without_heartbeat, :unregister_worker)
     def unregister_worker_with_heartbeat
       heart.stop
       unregister_worker_without_heartbeat
     end
-    alias_method(:unregister_worker_without_heartbeat, :unregister_worker)
     alias_method(:unregister_worker, :unregister_worker_with_heartbeat)
 
     def heart
       @heart ||= Heart.new(self)
     end
 
-    def prune_if_dead
-      return nil unless heart.last_beat_before?(5)
+    def remote_hostname
+      id.split(':').first
+    end
 
-      Resque.logger.info "Pruning worker '#{hostname}' from resque. Last heartbeat was at #{heart.last_beat}"
+    def dead?
+      return heart.last_beat_before?(50)
+    end
+
+    def prune_if_dead
+      return nil unless dead?
+
+      Resque.logger.info "Pruning worker '#{remote_hostname}' from resque. Last heartbeat was at #{heart.last_beat}"
       unregister_worker
     end
 
@@ -58,19 +66,20 @@ module Resque
         Resque.redis
       end
 
+      # you can send a redis wildcard to filter the workers you're looking for
       def Heart.heartbeat_key(worker_name)
         "worker:#{worker_name}:heartbeat"
       end
 
       def key
-        Heart.heartbeat_key worker
+        Heart.heartbeat_key worker.remote_hostname
       end
 
       def beat!
         redis.sadd(:workers, worker)
         redis.set(key, Time.now.to_s)
       rescue Exception => e
-        Resque.logger.fatal "Unable to set the heartbeat for worker '#{hostname}': #{e} : #{e.backtrace}"
+        Resque.logger.fatal "Unable to set the heartbeat for worker '#{worker.remote_hostname}': #{e} : #{e.backtrace}"
       end
 
       def last_beat_before?(seconds)
@@ -84,7 +93,7 @@ module Resque
   end
 
   # NOTE: this assumes all of your workers are putting out heartbeats
-  def self.prune_dead_workers
+  def self.prune_dead_workers!
     begin
       beats = Resque.redis.keys(Worker::Heart.heartbeat_key('*'))
       Worker.all.each do |worker|
@@ -94,7 +103,7 @@ module Resque
         beats.delete worker.heart.key
       end
 
-      # remove `
+      # at this point, beats only contains stuff from workers we don't even know about. Ditch 'em.
       beats.each do |key|
         Resque.logger.info "Removing #{key} from heartbeats because the worker isn't talking to Resque."
         Resque.redis.del key
@@ -104,4 +113,7 @@ module Resque
     end
   end
 
+  def self.dead_workers
+    Worker.all.select{|w| w.dead?}
+  end
 end
