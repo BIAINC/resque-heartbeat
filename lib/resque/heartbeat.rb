@@ -10,9 +10,9 @@ module Resque
     alias_method(:startup, :startup_with_heartbeat)
 
     alias_method(:unregister_worker_without_heartbeat, :unregister_worker)
-    def unregister_worker_with_heartbeat
+    def unregister_worker_with_heartbeat(*args)
       heart.stop
-      unregister_worker_without_heartbeat
+      unregister_worker_without_heartbeat(*args)
     end
     alias_method(:unregister_worker, :unregister_worker_with_heartbeat)
 
