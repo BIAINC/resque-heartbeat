@@ -91,7 +91,7 @@ module Resque
       end
 
       def dead?
-        redis.get(key).nil?
+        !redis.exists(key)
       end
     end
   end
