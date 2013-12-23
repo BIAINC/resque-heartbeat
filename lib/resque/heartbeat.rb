@@ -55,7 +55,7 @@ module Resque
         @thrd ||= Thread.new do
           loop do
             begin
-              sleep(2) && beat!
+              beat! && sleep(2)
             rescue Exception => e
               Resque.logger.error "Error while doing heartbeat: #{e} : #{e.backtrace}"
             end
@@ -92,6 +92,10 @@ module Resque
 
       def dead?
         !redis.exists(key)
+      end
+
+      def ttl
+        Resque.redis.ttl key
       end
     end
   end
