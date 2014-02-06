@@ -24,19 +24,36 @@ module Resque
       id.split(':').first
     end
 
+    def remote_pid
+      id.split(':')[1]
+    end
+
     def dead?
-      return heart.last_beat_before?(50)
+      return heart.dead?
     end
 
     def prune_if_dead
       return nil unless dead?
 
-      Resque.logger.info "Pruning worker '#{remote_hostname}' from resque. Last heartbeat was at #{heart.last_beat}"
+      Resque.logger.info "Pruning worker '#{remote_hostname}' from resque"
       unregister_worker
     end
 
     class Heart
       attr_reader :worker
+
+      class << self
+        attr_writer :heartbeat_interval_seconds, :heartbeats_before_dead
+      end
+
+      def self.heartbeat_interval_seconds
+        @heartbeat_interval_seconds ||= 2
+      end
+
+      def self.heartbeats_before_dead
+        @heartbeats_before_dead ||= 25
+      end
+
 
       def initialize(worker)
         @worker = worker
@@ -46,7 +63,7 @@ module Resque
         @thrd ||= Thread.new do
           loop do
             begin
-              sleep(2) && beat!
+              beat! && sleep(Heart.heartbeat_interval_seconds)
             rescue Exception => e
               Resque.logger.error "Error while doing heartbeat: #{e} : #{e.backtrace}"
             end
@@ -56,8 +73,7 @@ module Resque
 
       def stop
         Thread.kill(@thrd)
-        puts @thrd
-        Resque.redis.del key
+        redis.del key
       rescue
         nil
       end
@@ -66,28 +82,28 @@ module Resque
         Resque.redis
       end
 
-      # you can send a redis wildcard to filter the workers you're looking for
-      def Heart.heartbeat_key(worker_name)
-        "worker:#{worker_name}:heartbeat"
+      # you can send redis wildcards to filter the workers you're looking for
+      def Heart.heartbeat_key(worker_name, worker_pid)
+        "worker:#{worker_name}:#{worker_pid}:heartbeat"
       end
 
       def key
-        Heart.heartbeat_key worker.remote_hostname
+        Heart.heartbeat_key(worker.remote_hostname, worker.remote_pid)
       end
 
       def beat!
         redis.sadd(:workers, worker)
-        redis.set(key, Time.now.to_s)
+        redis.setex(key, Heart.heartbeat_interval_seconds * Heart.heartbeats_before_dead, '')
       rescue Exception => e
         Resque.logger.fatal "Unable to set the heartbeat for worker '#{worker.remote_hostname}': #{e} : #{e.backtrace}"
       end
 
-      def last_beat_before?(seconds)
-        Time.parse(last_beat).utc < (Time.now.utc - seconds) rescue true
+      def dead?
+        !redis.exists(key)
       end
 
-      def last_beat
-        Resque.redis.get(key) || worker.started
+      def ttl
+        Resque.redis.ttl key
       end
     end
   end
@@ -95,7 +111,7 @@ module Resque
   # NOTE: this assumes all of your workers are putting out heartbeats
   def self.prune_dead_workers!
     begin
-      beats = Resque.redis.keys(Worker::Heart.heartbeat_key('*'))
+      beats = Resque.redis.keys(Worker::Heart.heartbeat_key('*', '*'))
       Worker.all.each do |worker|
         worker.prune_if_dead
 
