@@ -40,11 +40,6 @@ module Resque
       end
     end
 
-    # very version-dependent way of getting around the fact that 
-    def clean_up_corrupt_job
-      redis.del("worker:#{self}")
-    end
-
     class Heart
       attr_reader :worker
 
