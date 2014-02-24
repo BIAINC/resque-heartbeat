@@ -36,7 +36,12 @@ module Resque
       return nil unless dead?
 
       Resque.logger.info "Pruning worker '#{remote_hostname}' from resque"
-      unregister_worker
+      begin
+        unregister_worker
+      rescue => e
+        Resque.logger.error "Error while unregistering worker '#{remote_hostname}': #{e.message} #{e.backtrace}"
+        Resque.logger.error "Job was #{redis.get('worker:#{self}')}"
+      end
     end
 
     class Heart
